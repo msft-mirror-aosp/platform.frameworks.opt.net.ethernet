@@ -16,8 +16,6 @@
 
 package com.android.server.ethernet;
 
-import static com.android.internal.util.Preconditions.checkNotNull;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -37,7 +35,6 @@ import android.net.ip.IIpClient;
 import android.net.ip.IpClientCallbacks;
 import android.net.ip.IpClientUtil;
 import android.net.shared.ProvisioningConfiguration;
-import android.net.util.InterfaceParams;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.Looper;
@@ -49,6 +46,7 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.net.module.util.InterfaceParams;
 
 import java.io.FileDescriptor;
 import java.util.Objects;
@@ -370,7 +368,7 @@ public class EthernetNetworkFactory extends NetworkFactory {
                 @NonNull NetworkCapabilities capabilities, NetworkFactory networkFactory,
                 Dependencies deps) {
             name = ifaceName;
-            mCapabilities = checkNotNull(capabilities);
+            mCapabilities = Objects.requireNonNull(capabilities);
             mHandler = handler;
             mContext = context;
             mNetworkFactory = networkFactory;
