@@ -19,20 +19,39 @@ package com.android.server.ethernet;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.content.Context;
+import android.content.res.Resources;
 import android.net.InetAddresses;
+import android.net.IEthernetNetworkManagementListener;
+import android.net.INetd;
 import android.net.IpConfiguration;
 import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
 import android.net.StaticIpConfiguration;
+import android.os.HandlerThread;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.internal.R;
+import com.android.testutils.HandlerUtils;
+
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -40,6 +59,42 @@ import java.util.ArrayList;
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class EthernetTrackerTest {
+    private static final String TEST_IFACE = "test123";
+    private static final int TIMEOUT_MS = 1_000;
+    private static final String THREAD_NAME = "EthernetServiceThread";
+    private static final IEthernetNetworkManagementListener NULL_LISTENER = null;
+    private EthernetTracker tracker;
+    private HandlerThread mHandlerThread;
+    @Mock private Context mContext;
+    @Mock private EthernetNetworkFactory mFactory;
+    @Mock private INetd mNetd;
+    @Mock Resources mResources;
+
+    @Before
+    public void setUp() {
+        MockitoAnnotations.initMocks(this);
+        initMockResources();
+        when(mFactory.updateInterfaceLinkState(anyString(), anyBoolean(), any())).thenReturn(false);
+        mHandlerThread = new HandlerThread(THREAD_NAME);
+        mHandlerThread.start();
+        tracker = new EthernetTracker(mContext, mHandlerThread.getThreadHandler(), mFactory, mNetd);
+    }
+
+    @After
+    public void cleanUp() {
+        mHandlerThread.quitSafely();
+    }
+
+    private void initMockResources() {
+        doReturn("").when(mResources).getString(R.string.config_ethernet_iface_regex);
+        doReturn(new String[0]).when(mResources).getStringArray(R.array.config_ethernet_interfaces);
+        doReturn(mResources).when(mContext).getResources();
+    }
+
+    private void waitForIdle() {
+        HandlerUtils.waitForIdle(mHandlerThread, TIMEOUT_MS);
+    }
+
     /**
      * Test: Creation of various valid static IP configurations
      */
@@ -246,16 +301,15 @@ public class EthernetTrackerTest {
 
     @Test
     public void testCreateEthernetTrackerConfigReturnsCorrectValue() {
-        final String name = "1";
         final String capabilities = "2";
         final String ipConfig = "3";
         final String transport = "4";
-        final String configString = String.join(";", name, capabilities, ipConfig, transport);
+        final String configString = String.join(";", TEST_IFACE, capabilities, ipConfig, transport);
 
         final EthernetTracker.EthernetTrackerConfig config =
                 EthernetTracker.createEthernetTrackerConfig(configString);
 
-        assertEquals(name, config.mName);
+        assertEquals(TEST_IFACE, config.mIface);
         assertEquals(capabilities, config.mCapabilities);
         assertEquals(ipConfig, config.mIpConfig);
         assertEquals(transport, config.mTransport);
@@ -265,5 +319,37 @@ public class EthernetTrackerTest {
     public void testCreateEthernetTrackerConfigThrowsNpeWithNullInput() {
         assertThrows(NullPointerException.class,
                 () -> EthernetTracker.createEthernetTrackerConfig(null));
+    }
+
+    @Test
+    public void testUpdateConfiguration() {
+        final NetworkCapabilities capabilities = new NetworkCapabilities.Builder().build();
+        final StaticIpConfiguration staticIpConfig = new StaticIpConfiguration();
+        final IEthernetNetworkManagementListener listener = null;
+
+        tracker.updateConfiguration(TEST_IFACE, staticIpConfig, capabilities, listener);
+        waitForIdle();
+
+        verify(mFactory).updateInterface(
+                eq(TEST_IFACE), eq(EthernetTracker.createIpConfiguration(staticIpConfig)),
+                eq(capabilities), eq(listener));
+    }
+
+    @Test
+    public void testConnectNetworkCorrectlyCallsFactory() {
+        tracker.connectNetwork(TEST_IFACE, NULL_LISTENER);
+        waitForIdle();
+
+        verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(true /* up */),
+                eq(NULL_LISTENER));
+    }
+
+    @Test
+    public void testDisconnectNetworkCorrectlyCallsFactory() {
+        tracker.disconnectNetwork(TEST_IFACE, NULL_LISTENER);
+        waitForIdle();
+
+        verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(false /* up */),
+                eq(NULL_LISTENER));
     }
 }
