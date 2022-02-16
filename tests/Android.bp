@@ -28,16 +28,10 @@ android_test {
     libs: [
         "android.test.runner",
         "android.test.base",
-        "android.test.mock",
     ],
 
     static_libs: [
         "androidx.test.rules",
         "ethernet-service",
-        "frameworks-base-testutils",
-        "mockito-target-minus-junit4",
-        "net-tests-utils",
-        "services.core",
-        "services.net",
     ],
 }
