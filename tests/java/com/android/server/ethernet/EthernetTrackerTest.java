@@ -16,14 +16,17 @@
 
 package com.android.server.ethernet;
 
+import static android.net.TestNetworkManager.TEST_TAP_PREFIX;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -39,11 +42,12 @@ import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
 import android.net.StaticIpConfiguration;
 import android.os.HandlerThread;
+import android.os.RemoteException;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.internal.R;
+import com.android.connectivity.resources.R;
 import com.android.testutils.HandlerUtils;
 
 import org.junit.After;
@@ -68,16 +72,18 @@ public class EthernetTrackerTest {
     @Mock private Context mContext;
     @Mock private EthernetNetworkFactory mFactory;
     @Mock private INetd mNetd;
-    @Mock Resources mResources;
+    @Mock private EthernetTracker.Dependencies mDeps;
 
     @Before
-    public void setUp() {
+    public void setUp() throws RemoteException {
         MockitoAnnotations.initMocks(this);
         initMockResources();
         when(mFactory.updateInterfaceLinkState(anyString(), anyBoolean(), any())).thenReturn(false);
+        when(mNetd.interfaceGetList()).thenReturn(new String[0]);
         mHandlerThread = new HandlerThread(THREAD_NAME);
         mHandlerThread.start();
-        tracker = new EthernetTracker(mContext, mHandlerThread.getThreadHandler(), mFactory, mNetd);
+        tracker = new EthernetTracker(mContext, mHandlerThread.getThreadHandler(), mFactory, mNetd,
+                mDeps);
     }
 
     @After
@@ -86,9 +92,8 @@ public class EthernetTrackerTest {
     }
 
     private void initMockResources() {
-        doReturn("").when(mResources).getString(R.string.config_ethernet_iface_regex);
-        doReturn(new String[0]).when(mResources).getStringArray(R.array.config_ethernet_interfaces);
-        doReturn(mResources).when(mContext).getResources();
+        when(mDeps.getInterfaceRegexFromResource(eq(mContext))).thenReturn("");
+        when(mDeps.getInterfaceConfigFromResource(eq(mContext))).thenReturn(new String[0]);
     }
 
     private void waitForIdle() {
@@ -324,15 +329,18 @@ public class EthernetTrackerTest {
     @Test
     public void testUpdateConfiguration() {
         final NetworkCapabilities capabilities = new NetworkCapabilities.Builder().build();
-        final StaticIpConfiguration staticIpConfig = new StaticIpConfiguration();
+        final LinkAddress linkAddr = new LinkAddress("192.0.2.2/25");
+        final StaticIpConfiguration staticIpConfig =
+                new StaticIpConfiguration.Builder().setIpAddress(linkAddr).build();
+        final IpConfiguration ipConfig =
+                new IpConfiguration.Builder().setStaticIpConfiguration(staticIpConfig).build();
         final IEthernetNetworkManagementListener listener = null;
 
-        tracker.updateConfiguration(TEST_IFACE, staticIpConfig, capabilities, listener);
+        tracker.updateConfiguration(TEST_IFACE, ipConfig, capabilities, listener);
         waitForIdle();
 
         verify(mFactory).updateInterface(
-                eq(TEST_IFACE), eq(EthernetTracker.createIpConfiguration(staticIpConfig)),
-                eq(capabilities), eq(listener));
+                eq(TEST_IFACE), eq(ipConfig), eq(capabilities), eq(listener));
     }
 
     @Test
@@ -351,5 +359,38 @@ public class EthernetTrackerTest {
 
         verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(false /* up */),
                 eq(NULL_LISTENER));
+    }
+
+    @Test
+    public void testIsValidTestInterfaceIsFalseWhenTestInterfacesAreNotIncluded() {
+        final String validIfaceName = TEST_TAP_PREFIX + "123";
+        tracker.setIncludeTestInterfaces(false);
+        waitForIdle();
+
+        final boolean isValidTestInterface = tracker.isValidTestInterface(validIfaceName);
+
+        assertFalse(isValidTestInterface);
+    }
+
+    @Test
+    public void testIsValidTestInterfaceIsFalseWhenTestInterfaceNameIsInvalid() {
+        final String invalidIfaceName = "123" + TEST_TAP_PREFIX;
+        tracker.setIncludeTestInterfaces(true);
+        waitForIdle();
+
+        final boolean isValidTestInterface = tracker.isValidTestInterface(invalidIfaceName);
+
+        assertFalse(isValidTestInterface);
+    }
+
+    @Test
+    public void testIsValidTestInterfaceIsTrueWhenTestInterfacesIncludedAndValidName() {
+        final String validIfaceName = TEST_TAP_PREFIX + "123";
+        tracker.setIncludeTestInterfaces(true);
+        waitForIdle();
+
+        final boolean isValidTestInterface = tracker.isValidTestInterface(validIfaceName);
+
+        assertTrue(isValidTestInterface);
     }
 }

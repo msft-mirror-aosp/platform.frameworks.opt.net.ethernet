@@ -23,6 +23,8 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PACK
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.res.Resources;
+import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.IEthernetNetworkManagementListener;
@@ -80,12 +82,16 @@ public class EthernetTracker {
     private static final boolean DBG = EthernetNetworkFactory.DBG;
 
     private static final String TEST_IFACE_REGEXP = TEST_TAP_PREFIX + "\\d+";
+    private static final String LEGACY_IFACE_REGEXP = "eth\\d";
 
     /**
      * Interface names we track. This is a product-dependent regular expression, plus,
      * if setIncludeTestInterfaces is true, any test interfaces.
      */
     private String mIfaceMatch;
+    /**
+     * Track test interfaces if true, don't track otherwise.
+     */
     private boolean mIncludeTestInterfaces = false;
 
     /** Mapping between {iface name | mac address} -> {NetworkCapabilities} */
@@ -99,6 +105,7 @@ public class EthernetTracker {
     private final Handler mHandler;
     private final EthernetNetworkFactory mFactory;
     private final EthernetConfigStore mConfigStore;
+    private final Dependencies mDeps;
 
     private final RemoteCallbackList<IEthernetServiceListener> mListeners =
             new RemoteCallbackList<>();
@@ -120,19 +127,72 @@ public class EthernetTracker {
         }
     }
 
+    public static class Dependencies {
+        // TODO: remove legacy resource fallback after migrating its overlays.
+        private String getPlatformRegexResource(Context context) {
+            final Resources r = context.getResources();
+            final int resId =
+                r.getIdentifier("config_ethernet_iface_regex", "string", context.getPackageName());
+            return r.getString(resId);
+        }
+
+        // TODO: remove legacy resource fallback after migrating its overlays.
+        private String[] getPlatformInterfaceConfigs(Context context) {
+            final Resources r = context.getResources();
+            final int resId = r.getIdentifier("config_ethernet_interfaces", "array",
+                    context.getPackageName());
+            return r.getStringArray(resId);
+        }
+
+        public String getInterfaceRegexFromResource(Context context) {
+            final String platformRegex = getPlatformRegexResource(context);
+            final String match;
+            if (!LEGACY_IFACE_REGEXP.equals(platformRegex)) {
+                // Platform resource is not the historical default: use the overlay
+                match = platformRegex;
+            } else {
+                final ConnectivityResources resources = new ConnectivityResources(context);
+                match = resources.get().getString(
+                        com.android.connectivity.resources.R.string.config_ethernet_iface_regex);
+            }
+            return match;
+        }
+
+        public String[] getInterfaceConfigFromResource(Context context) {
+            final String[] platformInterfaceConfigs = getPlatformInterfaceConfigs(context);
+            final String[] interfaceConfigs;
+            if (platformInterfaceConfigs.length != 0) {
+                // Platform resource is not the historical default: use the overlay
+                interfaceConfigs = platformInterfaceConfigs;
+            } else {
+                final ConnectivityResources resources = new ConnectivityResources(context);
+                interfaceConfigs = resources.get().getStringArray(
+                        com.android.connectivity.resources.R.array.config_ethernet_interfaces);
+            }
+            return interfaceConfigs;
+        }
+    }
+
     EthernetTracker(@NonNull final Context context, @NonNull final Handler handler,
             @NonNull final EthernetNetworkFactory factory, @NonNull final INetd netd) {
+        this(context, handler, factory, netd, new Dependencies());
+    }
+
+    @VisibleForTesting
+    EthernetTracker(@NonNull final Context context, @NonNull final Handler handler,
+            @NonNull final EthernetNetworkFactory factory, @NonNull final INetd netd,
+            @NonNull final Dependencies deps) {
         mContext = context;
         mHandler = handler;
         mFactory = factory;
         mNetd = netd;
+        mDeps = deps;
 
         // Interface match regex.
         updateIfaceMatchRegexp();
 
         // Read default Ethernet interface configuration from resources
-        final String[] interfaceConfigs = context.getResources().getStringArray(
-                com.android.internal.R.array.config_ethernet_interfaces);
+        final String[] interfaceConfigs = mDeps.getInterfaceConfigFromResource(context);
         for (String strConfig : interfaceConfigs) {
             parseEthernetConfig(strConfig);
         }
@@ -229,18 +289,20 @@ public class EthernetTracker {
 
     @VisibleForTesting(visibility = PACKAGE)
     protected void updateConfiguration(@NonNull final String iface,
-            @NonNull final StaticIpConfiguration staticIpConfig,
-            @NonNull final NetworkCapabilities capabilities,
+            @NonNull final IpConfiguration ipConfig,
+            @Nullable final NetworkCapabilities capabilities,
             @Nullable final IEthernetNetworkManagementListener listener) {
         if (DBG) {
             Log.i(TAG, "updateConfiguration, iface: " + iface + ", capabilities: " + capabilities
-                    + ", staticIpConfig: " + staticIpConfig);
+                    + ", ipConfig: " + ipConfig);
         }
-        final IpConfiguration ipConfig = createIpConfiguration(staticIpConfig);
-        writeIpConfiguration(iface, ipConfig);
-        mNetworkCapabilities.put(iface, capabilities);
+        final IpConfiguration localIpConfig = new IpConfiguration(ipConfig);
+        writeIpConfiguration(iface, localIpConfig);
+        if (null != capabilities) {
+            mNetworkCapabilities.put(iface, capabilities);
+        }
         mHandler.post(() -> {
-            mFactory.updateInterface(iface, ipConfig, capabilities, listener);
+            mFactory.updateInterface(iface, localIpConfig, capabilities, listener);
             broadcastInterfaceStateChange(iface);
         });
     }
@@ -715,13 +777,9 @@ public class EthernetTracker {
         return createIpConfiguration(staticIpConfigBuilder.build());
     }
 
-    static IpConfiguration createIpConfiguration(
+    private static IpConfiguration createIpConfiguration(
             @NonNull final StaticIpConfiguration staticIpConfig) {
-        final IpConfiguration ret = new IpConfiguration();
-        ret.setIpAssignment(IpAssignment.STATIC);
-        ret.setProxySettings(ProxySettings.NONE);
-        ret.setStaticIpConfiguration(staticIpConfig);
-        return ret;
+        return new IpConfiguration.Builder().setStaticIpConfiguration(staticIpConfig).build();
     }
 
     private IpConfiguration getOrCreateIpConfiguration(String iface) {
@@ -734,12 +792,22 @@ public class EthernetTracker {
     }
 
     private void updateIfaceMatchRegexp() {
-        final String match = mContext.getResources().getString(
-                com.android.internal.R.string.config_ethernet_iface_regex);
+        final String match = mDeps.getInterfaceRegexFromResource(mContext);
         mIfaceMatch = mIncludeTestInterfaces
                 ? "(" + match + "|" + TEST_IFACE_REGEXP + ")"
                 : match;
         Log.d(TAG, "Interface match regexp set to '" + mIfaceMatch + "'");
+    }
+
+    /**
+     * Validate if a given interface is valid for testing.
+     *
+     * @param iface the name of the interface to validate.
+     * @return {@code true} if test interfaces are enabled and the given {@code iface} has a test
+     * interface prefix, {@code false} otherwise.
+     */
+    public boolean isValidTestInterface(@NonNull final String iface) {
+        return mIncludeTestInterfaces && iface.matches(TEST_IFACE_REGEXP);
     }
 
     private void postAndWaitForRunnable(Runnable r) {

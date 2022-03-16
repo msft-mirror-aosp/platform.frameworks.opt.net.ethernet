@@ -19,7 +19,9 @@ package com.android.server.ethernet;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.res.Resources;
 import android.net.ConnectivityManager;
+import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.EthernetNetworkSpecifier;
 import android.net.IEthernetNetworkManagementListener;
@@ -49,6 +51,7 @@ import android.util.AndroidRuntimeException;
 import android.util.Log;
 import android.util.SparseArray;
 
+import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.net.module.util.InterfaceParams;
@@ -69,6 +72,8 @@ public class EthernetNetworkFactory extends NetworkFactory {
 
     private final static int NETWORK_SCORE = 70;
     private static final String NETWORK_TYPE = "Ethernet";
+    private static final String LEGACY_TCP_BUFFER_SIZES =
+            "524288,1048576,3145728,524288,1048576,2097152";
 
     private final ConcurrentHashMap<String, NetworkInterfaceState> mTrackingInterfaces =
             new ConcurrentHashMap<>();
@@ -93,6 +98,27 @@ public class EthernetNetworkFactory extends NetworkFactory {
 
         public InterfaceParams getNetworkInterfaceByName(String name) {
             return InterfaceParams.getByName(name);
+        }
+
+        // TODO: remove legacy resource fallback after migrating its overlays.
+        private String getPlatformTcpBufferSizes(Context context) {
+            final Resources r = context.getResources();
+            final int resId = r.getIdentifier("config_ethernet_tcp_buffers", "string",
+                    context.getPackageName());
+            return r.getString(resId);
+        }
+
+        public String getTcpBufferSizesFromResource(Context context) {
+            final String tcpBufferSizes;
+            final String platformTcpBufferSizes = getPlatformTcpBufferSizes(context);
+            if (!LEGACY_TCP_BUFFER_SIZES.equals(platformTcpBufferSizes)) {
+                // Platform resource is not the historical default: use the overlay.
+                tcpBufferSizes = platformTcpBufferSizes;
+            } else {
+                final ConnectivityResources resources = new ConnectivityResources(context);
+                tcpBufferSizes = resources.get().getString(R.string.config_ethernet_tcp_buffers);
+            }
+            return tcpBufferSizes;
         }
     }
 
@@ -220,18 +246,15 @@ public class EthernetNetworkFactory extends NetworkFactory {
             @NonNull final IpConfiguration ipConfig,
             @Nullable final NetworkCapabilities capabilities,
             @Nullable final IEthernetNetworkManagementListener listener) {
-        enforceInterfaceIsTracked(ifaceName);
+        if (!hasInterface(ifaceName)) {
+            maybeSendNetworkManagementCallbackForUntracked(ifaceName, listener);
+            return;
+        }
+
         final NetworkInterfaceState iface = mTrackingInterfaces.get(ifaceName);
         iface.updateInterface(ipConfig, capabilities, listener);
         mTrackingInterfaces.put(ifaceName, iface);
         updateCapabilityFilter();
-    }
-
-    private void enforceInterfaceIsTracked(@NonNull final String ifaceName) {
-        if (!hasInterface(ifaceName)) {
-            throw new UnsupportedOperationException(
-                    "Interface with name " + ifaceName + " is not being tracked.");
-        }
     }
 
     private static NetworkCapabilities mixInCapabilities(NetworkCapabilities nc,
@@ -272,10 +295,8 @@ public class EthernetNetworkFactory extends NetworkFactory {
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
     protected boolean updateInterfaceLinkState(@NonNull final String ifaceName, final boolean up,
             @Nullable final IEthernetNetworkManagementListener listener) {
-        if (!mTrackingInterfaces.containsKey(ifaceName)) {
-            maybeSendNetworkManagementCallback(listener, null,
-                    new EthernetNetworkManagementException(
-                            ifaceName + " can't be updated as it is not available."));
+        if (!hasInterface(ifaceName)) {
+            maybeSendNetworkManagementCallbackForUntracked(ifaceName, listener);
             return false;
         }
 
@@ -285,6 +306,13 @@ public class EthernetNetworkFactory extends NetworkFactory {
 
         NetworkInterfaceState iface = mTrackingInterfaces.get(ifaceName);
         return iface.updateLinkState(up, listener);
+    }
+
+    private void maybeSendNetworkManagementCallbackForUntracked(
+            String ifaceName, IEthernetNetworkManagementListener listener) {
+        maybeSendNetworkManagementCallback(listener, null,
+                new EthernetNetworkManagementException(
+                        ifaceName + " can't be updated as it is not available."));
     }
 
     @VisibleForTesting
@@ -483,7 +511,9 @@ public class EthernetNetworkFactory extends NetworkFactory {
             }
 
             mIpConfig = ipConfig;
-            setCapabilities(capabilities);
+            if (null != capabilities) {
+                setCapabilities(capabilities);
+            }
             // Send an abort callback if a request is filed before the previous one has completed.
             maybeSendNetworkManagementCallbackForAbort();
             // TODO: Update this logic to only do a restart if required. Although a restart may
@@ -514,8 +544,7 @@ public class EthernetNetworkFactory extends NetworkFactory {
             mIpClientCallback.awaitIpClientStart();
 
             if (sTcpBufferSizes == null) {
-                sTcpBufferSizes = mContext.getResources().getString(
-                        com.android.internal.R.string.config_ethernet_tcp_buffers);
+                sTcpBufferSizes = mDeps.getTcpBufferSizesFromResource(mContext);
             }
             provisionIpClient(mIpClient, mIpConfig, sTcpBufferSizes);
         }

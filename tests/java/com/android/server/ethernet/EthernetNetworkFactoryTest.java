@@ -63,7 +63,7 @@ import android.util.Pair;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.internal.R;
+import com.android.connectivity.resources.R;
 import com.android.net.module.util.InterfaceParams;
 
 import com.android.testutils.DevSdkIgnoreRule;
@@ -174,8 +174,7 @@ public class EthernetNetworkFactoryTest {
     }
 
     private void setupContext() {
-        when(mContext.getResources()).thenReturn(mResources);
-        when(mResources.getString(R.string.config_ethernet_tcp_buffers)).thenReturn("");
+        when(mDeps.getTcpBufferSizesFromResource(eq(mContext))).thenReturn("");
     }
 
     @After
@@ -762,5 +761,19 @@ public class EthernetNetworkFactoryTest {
         verify(mDeps).makeEthernetNetworkAgent(any(), any(),
                 eq(capabilities), any(), any(), any(), any());
         verifyRestart(ipConfiguration);
+    }
+
+    @Test
+    public void testUpdateInterfaceForNonExistingInterface() throws Exception {
+        initEthernetNetworkFactory();
+        // No interface exists due to not calling createAndVerifyProvisionedInterface(...).
+        final NetworkCapabilities capabilities = createDefaultFilterCaps();
+        final IpConfiguration ipConfiguration = createStaticIpConfig();
+        final TestNetworkManagementListener listener = new TestNetworkManagementListener();
+
+        mNetFactory.updateInterface(TEST_IFACE, ipConfiguration, capabilities, listener);
+
+        verifyNoStopOrStart();
+        assertFailedListener(listener, "can't be updated as it is not available");
     }
 }
