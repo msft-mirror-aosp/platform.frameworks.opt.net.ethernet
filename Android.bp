@@ -19,14 +19,18 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-filegroup {
-    name: "ethernet-service-updatable-sources",
+java_library {
+    name: "ethernet-service",
+    installable: true,
+
+    aidl: {
+        local_include_dirs: ["java"],
+    },
     srcs: [
         "java/**/*.java",
+        "java/**/I*.aidl",
+        "java/**/*.logtags",
     ],
-    path: "java",
-    visibility: [
-        "//frameworks/opt/net/ethernet/tests",
-        "//packages/modules/Connectivity/service-t",
-    ],
+
+    libs: ["services"],
 }
