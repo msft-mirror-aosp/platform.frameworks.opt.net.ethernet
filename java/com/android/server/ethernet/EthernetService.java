@@ -17,29 +17,31 @@
 package com.android.server.ethernet;
 
 import android.content.Context;
-import android.util.Log;
-import com.android.server.SystemService;
+import android.net.INetd;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.IBinder;
 
-public final class EthernetService extends SystemService {
+import java.util.Objects;
 
+// TODO: consider renaming EthernetServiceImpl to EthernetService and deleting this file.
+public final class EthernetService {
     private static final String TAG = "EthernetService";
-    final EthernetServiceImpl mImpl;
+    private static final String THREAD_NAME = "EthernetServiceThread";
 
-    public EthernetService(Context context) {
-        super(context);
-        mImpl = new EthernetServiceImpl(context);
+    private static INetd getNetd(Context context) {
+        final INetd netd =
+                INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE));
+        Objects.requireNonNull(netd, "could not get netd instance");
+        return netd;
     }
 
-    @Override
-    public void onStart() {
-        Log.i(TAG, "Registering service " + Context.ETHERNET_SERVICE);
-        publishBinderService(Context.ETHERNET_SERVICE, mImpl);
-    }
-
-    @Override
-    public void onBootPhase(int phase) {
-        if (phase == SystemService.PHASE_SYSTEM_SERVICES_READY) {
-            mImpl.start();
-        }
+    public static EthernetServiceImpl create(Context context) {
+        final HandlerThread handlerThread = new HandlerThread(THREAD_NAME);
+        handlerThread.start();
+        final Handler handler = new Handler(handlerThread.getLooper());
+        final EthernetNetworkFactory factory = new EthernetNetworkFactory(handler, context);
+        return new EthernetServiceImpl(context, handler,
+                new EthernetTracker(context, handler, factory, getNetd(context)));
     }
 }
