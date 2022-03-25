@@ -1,0 +1,12 @@
+{
+  "presubmit": [
+    {
+      "name": "EthernetServiceTests"
+    }
+  ],
+  "imports": [
+    {
+      "path": "packages/modules/Connectivity"
+    }
+  ]
+}
