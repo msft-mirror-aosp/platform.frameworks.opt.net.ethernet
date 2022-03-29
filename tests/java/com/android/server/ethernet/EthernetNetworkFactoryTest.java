@@ -21,6 +21,7 @@ import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -279,19 +280,13 @@ public class EthernetNetworkFactoryTest {
 
     // creates an unprovisioned interface
     private void createUnprovisionedInterface(String iface) throws Exception {
-        // the only way to create an unprovisioned interface is by calling needNetworkFor
-        // followed by releaseNetworkFor which will stop the NetworkAgent and IpClient. When
-        // EthernetNetworkFactory#updateInterfaceLinkState(iface, true) is called, the interface
-        // is automatically provisioned even if nobody has ever called needNetworkFor
+        // To create an unprovisioned interface, provision and then "stop" it, i.e. stop its
+        // NetworkAgent and IpClient. One way this can be done is by provisioning an interface and
+        // then calling onNetworkUnwanted.
         createAndVerifyProvisionedInterface(iface);
 
-        // Interface is already provisioned, so startProvisioning / register should not be called
-        // again
-        mNetFactory.needNetworkFor(createDefaultRequest());
-        verify(mIpClient, never()).startProvisioning(any());
-        verify(mNetworkAgent, never()).register();
-
-        mNetFactory.releaseNetworkFor(createDefaultRequest());
+        mNetworkAgent.getCallbacks().onNetworkUnwanted();
+        mLooper.dispatchAll();
         verifyStop();
 
         clearInvocations(mIpClient);
@@ -549,68 +544,59 @@ public class EthernetNetworkFactoryTest {
         verifyRestart(createDefaultIpConfig());
     }
 
-    @Test
-    public void testIgnoreOnIpLayerStartedCallbackAfterIpClientHasStopped() throws Exception {
-        initEthernetNetworkFactory();
+    private IpClientCallbacks getStaleIpClientCallbacks() throws Exception {
         createAndVerifyProvisionedInterface(TEST_IFACE);
-        mIpClientCallbacks.onProvisioningFailure(new LinkProperties());
-        mIpClientCallbacks.onProvisioningSuccess(new LinkProperties());
-        mLooper.dispatchAll();
+        final IpClientCallbacks staleIpClientCallbacks = mIpClientCallbacks;
+        mNetFactory.removeInterface(TEST_IFACE);
         verifyStop();
+        assertNotSame(mIpClientCallbacks, staleIpClientCallbacks);
+        return staleIpClientCallbacks;
+    }
 
-        // ipClient has been shut down first, we should not retry
+    @Test
+    public void testIgnoreOnIpLayerStartedCallbackForStaleCallback() throws Exception {
+        initEthernetNetworkFactory();
+        final IpClientCallbacks staleIpClientCallbacks = getStaleIpClientCallbacks();
+
+        staleIpClientCallbacks.onProvisioningSuccess(new LinkProperties());
+        mLooper.dispatchAll();
+
         verify(mIpClient, never()).startProvisioning(any());
         verify(mNetworkAgent, never()).register();
     }
 
     @Test
-    public void testIgnoreOnIpLayerStoppedCallbackAfterIpClientHasStopped() throws Exception {
+    public void testIgnoreOnIpLayerStoppedCallbackForStaleCallback() throws Exception {
         initEthernetNetworkFactory();
-        createAndVerifyProvisionedInterface(TEST_IFACE);
         when(mDeps.getNetworkInterfaceByName(TEST_IFACE)).thenReturn(mInterfaceParams);
-        mIpClientCallbacks.onProvisioningFailure(new LinkProperties());
-        mIpClientCallbacks.onProvisioningFailure(new LinkProperties());
-        mLooper.dispatchAll();
-        verifyStop();
+        final IpClientCallbacks staleIpClientCallbacks = getStaleIpClientCallbacks();
 
-        // ipClient has been shut down first, we should not retry
-        verify(mIpClient).startProvisioning(any());
+        staleIpClientCallbacks.onProvisioningFailure(new LinkProperties());
+        mLooper.dispatchAll();
+
+        verify(mIpClient, never()).startProvisioning(any());
     }
 
     @Test
-    public void testIgnoreLinkPropertiesCallbackAfterIpClientHasStopped() throws Exception {
+    public void testIgnoreLinkPropertiesCallbackForStaleCallback() throws Exception {
         initEthernetNetworkFactory();
-        createAndVerifyProvisionedInterface(TEST_IFACE);
-        LinkProperties lp = new LinkProperties();
+        final IpClientCallbacks staleIpClientCallbacks = getStaleIpClientCallbacks();
+        final LinkProperties lp = new LinkProperties();
 
-        // The test requires the two proceeding methods to happen one after the other in ENF and
-        // verifies onLinkPropertiesChange doesn't complete execution for a downed interface.
-        // Posting is necessary as updateInterfaceLinkState with false will set mIpClientCallbacks
-        // to null which will throw an NPE in the test if executed synchronously.
-        mHandler.post(() -> mNetFactory.updateInterfaceLinkState(TEST_IFACE, false, NULL_LISTENER));
-        mIpClientCallbacks.onLinkPropertiesChange(lp);
+        staleIpClientCallbacks.onLinkPropertiesChange(lp);
         mLooper.dispatchAll();
 
-        verifyStop();
-        // ipClient has been shut down first, we should not update
-        verify(mNetworkAgent, never()).sendLinkPropertiesImpl(same(lp));
+        verify(mNetworkAgent, never()).sendLinkPropertiesImpl(eq(lp));
     }
 
     @Test
-    public void testIgnoreNeighborLossCallbackAfterIpClientHasStopped() throws Exception {
+    public void testIgnoreNeighborLossCallbackForStaleCallback() throws Exception {
         initEthernetNetworkFactory();
-        createAndVerifyProvisionedInterface(TEST_IFACE);
+        final IpClientCallbacks staleIpClientCallbacks = getStaleIpClientCallbacks();
 
-        // The test requires the two proceeding methods to happen one after the other in ENF and
-        // verifies onReachabilityLost doesn't complete execution for a downed interface.
-        // Posting is necessary as updateInterfaceLinkState with false will set mIpClientCallbacks
-        // to null which will throw an NPE in the test if executed synchronously.
-        mHandler.post(() -> mNetFactory.updateInterfaceLinkState(TEST_IFACE, false, NULL_LISTENER));
-        mIpClientCallbacks.onReachabilityLost("Neighbor Lost");
+        staleIpClientCallbacks.onReachabilityLost("Neighbor Lost");
         mLooper.dispatchAll();
 
-        verifyStop();
-        // ipClient has been shut down first, we should not update
         verify(mIpClient, never()).startProvisioning(any());
         verify(mNetworkAgent, never()).register();
     }
