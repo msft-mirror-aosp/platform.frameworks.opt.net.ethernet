@@ -21,7 +21,6 @@ import static android.net.TestNetworkManager.TEST_TAP_PREFIX;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.IEthernetServiceListener;
-import android.net.INetd;
 import android.net.ITetheredInterfaceCallback;
 import android.net.InterfaceConfiguration;
 import android.net.IpConfiguration;
@@ -29,7 +28,6 @@ import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
-import android.net.NetworkStack;
 import android.net.StaticIpConfiguration;
 import android.os.Handler;
 import android.os.IBinder;
@@ -40,17 +38,14 @@ import android.os.ServiceManager;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
-import android.net.util.NetdService;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.net.module.util.NetdUtils;
 import com.android.server.net.BaseNetworkObserver;
 
 import java.io.FileDescriptor;
 import java.net.InetAddress;
 import java.util.ArrayList;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -92,7 +87,6 @@ final class EthernetTracker {
 
     private final Context mContext;
     private final INetworkManagementService mNMService;
-    private final INetd mNetd;
     private final Handler mHandler;
     private final EthernetNetworkFactory mFactory;
     private final EthernetConfigStore mConfigStore;
@@ -123,7 +117,6 @@ final class EthernetTracker {
         // The services we use.
         IBinder b = ServiceManager.getService(Context.NETWORKMANAGEMENT_SERVICE);
         mNMService = INetworkManagementService.Stub.asInterface(b);
-        mNetd = Objects.requireNonNull(NetdService.getInstance(), "could not get netd instance");
 
         // Interface match regex.
         updateIfaceMatchRegexp();
@@ -287,8 +280,7 @@ final class EthernetTracker {
         InterfaceConfiguration config = null;
         // Bring up the interface so we get link status indications.
         try {
-            NetworkStack.checkNetworkStackPermission(mContext);
-            NetdUtils.setInterfaceUp(mNetd, iface);
+            mNMService.setInterfaceUp(iface);
             config = mNMService.getInterfaceConfig(iface);
         } catch (RemoteException | IllegalStateException e) {
             // Either the system is crashing or the interface has disappeared. Just ignore the
@@ -459,7 +451,7 @@ final class EthernetTracker {
         String transport = tokens.length > 3 ? tokens[3] : null;
         NetworkCapabilities nc = createNetworkCapabilities(
                 !TextUtils.isEmpty(capabilities)  /* clear default capabilities */, capabilities,
-                transport).build();
+                transport);
         mNetworkCapabilities.put(name, nc);
 
         if (tokens.length > 2 && !TextUtils.isEmpty(tokens[2])) {
@@ -469,26 +461,24 @@ final class EthernetTracker {
     }
 
     private static NetworkCapabilities createDefaultNetworkCapabilities(boolean isTestIface) {
-        NetworkCapabilities.Builder builder = createNetworkCapabilities(
-                false /* clear default capabilities */, null, null)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED);
+        NetworkCapabilities nc = createNetworkCapabilities(false /* clear default capabilities */);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
 
         if (isTestIface) {
-                builder.addTransportType(NetworkCapabilities.TRANSPORT_TEST);
+            nc.addTransportType(NetworkCapabilities.TRANSPORT_TEST);
         } else {
-                builder.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            nc.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         }
 
-        return builder.build();
+        return nc;
     }
 
     private static NetworkCapabilities createNetworkCapabilities(boolean clearDefaultCapabilities) {
-        return createNetworkCapabilities(clearDefaultCapabilities, null, null).build();
+        return createNetworkCapabilities(clearDefaultCapabilities, null, null);
     }
 
     /**
@@ -503,13 +493,14 @@ final class EthernetTracker {
      *                          will cause the override to be ignored.
      */
     @VisibleForTesting
-    static NetworkCapabilities.Builder createNetworkCapabilities(
+    static NetworkCapabilities createNetworkCapabilities(
             boolean clearDefaultCapabilities, @Nullable String commaSeparatedCapabilities,
             @Nullable String overrideTransport) {
 
-        final NetworkCapabilities.Builder builder = clearDefaultCapabilities
-                ? NetworkCapabilities.Builder.withoutDefaultCapabilities()
-                : new NetworkCapabilities.Builder();
+        NetworkCapabilities nc = new NetworkCapabilities();
+        if (clearDefaultCapabilities) {
+            nc.clearAll();  // Remove default capabilities and transports
+        }
 
         // Determine the transport type. If someone has tried to define an override transport then
         // attempt to add it. Since we can only have one override, all errors with it will
@@ -536,21 +527,21 @@ final class EthernetTracker {
         // Apply the transport. If the user supplied a valid number that is not a valid transport
         // then adding will throw an exception. Default back to TRANSPORT_ETHERNET if that happens
         try {
-            builder.addTransportType(transport);
+            nc.addTransportType(transport);
         } catch (IllegalArgumentException iae) {
             Log.e(TAG, transport + " is not a valid NetworkCapability.TRANSPORT_* value. "
                     + "Defaulting to TRANSPORT_ETHERNET");
-            builder.addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET);
+            nc.addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET);
         }
 
-        builder.setLinkUpstreamBandwidthKbps(100 * 1000);
-        builder.setLinkDownstreamBandwidthKbps(100 * 1000);
+        nc.setLinkUpstreamBandwidthKbps(100 * 1000);
+        nc.setLinkDownstreamBandwidthKbps(100 * 1000);
 
         if (!TextUtils.isEmpty(commaSeparatedCapabilities)) {
             for (String strNetworkCapability : commaSeparatedCapabilities.split(",")) {
                 if (!TextUtils.isEmpty(strNetworkCapability)) {
                     try {
-                        builder.addCapability(Integer.valueOf(strNetworkCapability));
+                        nc.addCapability(Integer.valueOf(strNetworkCapability));
                     } catch (NumberFormatException nfe) {
                         Log.e(TAG, "Capability '" + strNetworkCapability + "' could not be parsed");
                     } catch (IllegalArgumentException iae) {
@@ -562,11 +553,11 @@ final class EthernetTracker {
         }
         // Ethernet networks have no way to update the following capabilities, so they always
         // have them.
-        builder.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING);
-        builder.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED);
-        builder.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
 
-        return builder;
+        return nc;
     }
 
     /**
@@ -578,8 +569,7 @@ final class EthernetTracker {
      */
     @VisibleForTesting
     static IpConfiguration parseStaticIpConfiguration(String staticIpConfig) {
-        final StaticIpConfiguration.Builder staticIpConfigBuilder =
-                new StaticIpConfiguration.Builder();
+        StaticIpConfiguration ipConfig = new StaticIpConfiguration();
 
         for (String keyValueAsString : staticIpConfig.trim().split(" ")) {
             if (TextUtils.isEmpty(keyValueAsString)) continue;
@@ -595,20 +585,20 @@ final class EthernetTracker {
 
             switch (key) {
                 case "ip":
-                    staticIpConfigBuilder.setIpAddress(new LinkAddress(value));
+                    ipConfig.ipAddress = new LinkAddress(value);
                     break;
                 case "domains":
-                    staticIpConfigBuilder.setDomains(value);
+                    ipConfig.domains = value;
                     break;
                 case "gateway":
-                    staticIpConfigBuilder.setGateway(InetAddress.parseNumericAddress(value));
+                    ipConfig.gateway = InetAddress.parseNumericAddress(value);
                     break;
                 case "dns": {
                     ArrayList<InetAddress> dnsAddresses = new ArrayList<>();
                     for (String address: value.split(",")) {
                         dnsAddresses.add(InetAddress.parseNumericAddress(address));
                     }
-                    staticIpConfigBuilder.setDnsServers(dnsAddresses);
+                    ipConfig.dnsServers.addAll(dnsAddresses);
                     break;
                 }
                 default : {
@@ -617,18 +607,11 @@ final class EthernetTracker {
                 }
             }
         }
-        final IpConfiguration ret = new IpConfiguration();
-        ret.setIpAssignment(IpAssignment.STATIC);
-        ret.setProxySettings(ProxySettings.NONE);
-        ret.setStaticIpConfiguration(staticIpConfigBuilder.build());
-        return ret;
+        return new IpConfiguration(IpAssignment.STATIC, ProxySettings.NONE, ipConfig, null);
     }
 
     private static IpConfiguration createDefaultIpConfiguration() {
-        final IpConfiguration ret = new IpConfiguration();
-        ret.setIpAssignment(IpAssignment.DHCP);
-        ret.setProxySettings(ProxySettings.NONE);
-        return ret;
+        return new IpConfiguration(IpAssignment.DHCP, ProxySettings.NONE, null, null);
     }
 
     private void updateIfaceMatchRegexp() {

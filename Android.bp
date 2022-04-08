@@ -15,10 +15,6 @@
 // Build the java code
 // ============================================================
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 java_library {
     name: "ethernet-service",
     installable: true,

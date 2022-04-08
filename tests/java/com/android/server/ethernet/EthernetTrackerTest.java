@@ -19,7 +19,6 @@ package com.android.server.ethernet;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-import android.net.InetAddresses;
 import android.net.IpConfiguration;
 import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
@@ -34,7 +33,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.net.InetAddress;
-import java.util.ArrayList;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
@@ -48,26 +46,28 @@ public class EthernetTrackerTest {
         assertStaticConfiguration(new StaticIpConfiguration(), "");
 
         // Setting only the IP address properly cascades and assumes defaults
-        assertStaticConfiguration(new StaticIpConfiguration.Builder()
-                .setIpAddress(new LinkAddress("192.0.2.10/24")).build(), "ip=192.0.2.10/24");
+        assertStaticConfiguration(
+                new StaticIpConfigBuilder().setIp("192.0.2.10/24").build(),
+                "ip=192.0.2.10/24");
 
-        final ArrayList<InetAddress> dnsAddresses = new ArrayList<>();
-        dnsAddresses.add(InetAddresses.parseNumericAddress("4.4.4.4"));
-        dnsAddresses.add(InetAddresses.parseNumericAddress("8.8.8.8"));
         // Setting other fields properly cascades them
-        assertStaticConfiguration(new StaticIpConfiguration.Builder()
-                .setIpAddress(new LinkAddress("192.0.2.10/24"))
-                .setDnsServers(dnsAddresses)
-                .setGateway(InetAddresses.parseNumericAddress("192.0.2.1"))
-                .setDomains("android").build(),
+        assertStaticConfiguration(
+                new StaticIpConfigBuilder()
+                        .setIp("192.0.2.10/24")
+                        .setDns(new String[] {"4.4.4.4", "8.8.8.8"})
+                        .setGateway("192.0.2.1")
+                        .setDomains("android")
+                        .build(),
                 "ip=192.0.2.10/24 dns=4.4.4.4,8.8.8.8 gateway=192.0.2.1 domains=android");
 
         // Verify order doesn't matter
-        assertStaticConfiguration(new StaticIpConfiguration.Builder()
-                .setIpAddress(new LinkAddress("192.0.2.10/24"))
-                .setDnsServers(dnsAddresses)
-                .setGateway(InetAddresses.parseNumericAddress("192.0.2.1"))
-                .setDomains("android").build(),
+        assertStaticConfiguration(
+                new StaticIpConfigBuilder()
+                        .setIp("192.0.2.10/24")
+                        .setDns(new String[] {"4.4.4.4", "8.8.8.8"})
+                        .setGateway("192.0.2.1")
+                        .setDomains("android")
+                        .build(),
                 "domains=android ip=192.0.2.10/24 gateway=192.0.2.1 dns=4.4.4.4,8.8.8.8 ");
     }
 
@@ -96,22 +96,41 @@ public class EthernetTrackerTest {
 
     private void assertStaticConfiguration(StaticIpConfiguration expectedStaticIpConfig,
                 String configAsString) {
-        final IpConfiguration expectedIpConfiguration = new IpConfiguration();
-        expectedIpConfiguration.setIpAssignment(IpAssignment.STATIC);
-        expectedIpConfiguration.setProxySettings(ProxySettings.NONE);
-        expectedIpConfiguration.setStaticIpConfiguration(expectedStaticIpConfig);
+        IpConfiguration expectedIpConfiguration = new IpConfiguration(IpAssignment.STATIC,
+                ProxySettings.NONE, expectedStaticIpConfig, null);
 
         assertEquals(expectedIpConfiguration,
                 EthernetTracker.parseStaticIpConfiguration(configAsString));
     }
 
-    private NetworkCapabilities.Builder makeEthernetCapabilitiesBuilder(boolean clearAll) {
-        final NetworkCapabilities.Builder builder =
-                clearAll ? NetworkCapabilities.Builder.withoutDefaultCapabilities()
-                        : new NetworkCapabilities.Builder();
-        return builder.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
+    private static class StaticIpConfigBuilder {
+        private final StaticIpConfiguration config = new StaticIpConfiguration();
+
+        StaticIpConfigBuilder setIp(String address) {
+            config.ipAddress = new LinkAddress(address);
+            return this;
+        }
+
+        StaticIpConfigBuilder setDns(String[] dnsArray) {
+            for (String dns : dnsArray) {
+                config.dnsServers.add(InetAddress.parseNumericAddress(dns));
+            }
+            return this;
+        }
+
+        StaticIpConfigBuilder setGateway(String gateway) {
+            config.gateway = InetAddress.parseNumericAddress(gateway);
+            return this;
+        }
+
+        StaticIpConfigBuilder setDomains(String domains) {
+            config.domains = domains;
+            return this;
+        }
+
+        StaticIpConfiguration build() {
+            return new StaticIpConfiguration(config);
+        }
     }
 
     /**
@@ -121,23 +140,23 @@ public class EthernetTrackerTest {
     public void createNetworkCapabilities() {
 
         // Particularly common expected results
-        NetworkCapabilities defaultEthernetCleared =
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
-                        .setLinkUpstreamBandwidthKbps(100000)
-                        .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-                        .build();
+        NetworkCapabilities defaultEthernetCleared = new NetworkCapabilitiesBuilder()
+                .clearAll()
+                .setLinkUpstreamBandwidthKbps(100000)
+                .setLinkDownstreamBandwidthKbps(100000)
+                .addTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build();
 
-        NetworkCapabilities ethernetClearedWithCommonCaps =
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
-                        .setLinkUpstreamBandwidthKbps(100000)
-                        .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-                        .addCapability(12)
-                        .addCapability(13)
-                        .addCapability(14)
-                        .addCapability(15)
-                        .build();
+        NetworkCapabilities ethernetClearedWithCommonCaps = new NetworkCapabilitiesBuilder()
+                .clearAll()
+                .setLinkUpstreamBandwidthKbps(100000)
+                .setLinkDownstreamBandwidthKbps(100000)
+                .addTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .addCapability(12)
+                .addCapability(13)
+                .addCapability(14)
+                .addCapability(15)
+                .build();
 
         // Empty capabilities and transports lists with a "please clear defaults" should
         // yield an empty capabilities set with TRANPORT_ETHERNET
@@ -146,20 +165,20 @@ public class EthernetTrackerTest {
         // Empty capabilities and transports without the clear defaults flag should return the
         // default capabilities set with TRANSPORT_ETHERNET
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(false /* clearAll */)
+                new NetworkCapabilitiesBuilder()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                        .addTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
                         .build(),
                 false, "", "");
 
         // A list of capabilities without the clear defaults flag should return the default
         // capabilities, mixed with the desired capabilities, and TRANSPORT_ETHERNET
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(false /* clearAll */)
+                new NetworkCapabilitiesBuilder()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                        .addTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
                         .addCapability(11)
                         .addCapability(12)
                         .build(),
@@ -176,31 +195,35 @@ public class EthernetTrackerTest {
         // Adding a valid override transport will remove the default TRANSPORT_ETHERNET transport
         // and apply only the override to the capabiltities object
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
+                new NetworkCapabilitiesBuilder()
+                        .clearAll()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(0)
+                        .addTransport(0)
                         .build(),
                 true, "", "0");
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
+                new NetworkCapabilitiesBuilder()
+                        .clearAll()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(1)
+                        .addTransport(1)
                         .build(),
                 true, "", "1");
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
+                new NetworkCapabilitiesBuilder()
+                        .clearAll()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(2)
+                        .addTransport(2)
                         .build(),
                 true, "", "2");
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
+                new NetworkCapabilitiesBuilder()
+                        .clearAll()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
-                        .addTransportType(3)
+                        .addTransport(3)
                         .build(),
                 true, "", "3");
 
@@ -221,14 +244,15 @@ public class EthernetTrackerTest {
 
         // Ensure the adding of both capabilities and transports work
         assertParsedNetworkCapabilities(
-                makeEthernetCapabilitiesBuilder(true /* clearAll */)
+                new NetworkCapabilitiesBuilder()
+                        .clearAll()
                         .setLinkUpstreamBandwidthKbps(100000)
                         .setLinkDownstreamBandwidthKbps(100000)
                         .addCapability(12)
                         .addCapability(13)
                         .addCapability(14)
                         .addCapability(15)
-                        .addTransportType(3)
+                        .addTransport(3)
                         .build(),
                 true, "12,13,14,15", "3");
 
@@ -240,6 +264,42 @@ public class EthernetTrackerTest {
             boolean clearCapabilties, String configCapabiltiies,String configTransports) {
         assertEquals(expectedNetworkCapabilities,
                 EthernetTracker.createNetworkCapabilities(clearCapabilties, configCapabiltiies,
-                        configTransports).build());
+                        configTransports));
+    }
+
+    private static class NetworkCapabilitiesBuilder {
+        private final NetworkCapabilities nc = new NetworkCapabilities();
+
+        NetworkCapabilitiesBuilder clearAll(){
+            // This is THE ONLY one that doesn't return a reference to the object so I wrapped
+            // everything in a builder to keep things consistent and clean above. Fix if this
+            // ever changes
+            nc.clearAll();
+            return this;
+        }
+
+        NetworkCapabilitiesBuilder addCapability(int capability) {
+            nc.addCapability(capability);
+            return this;
+        }
+
+        NetworkCapabilitiesBuilder addTransport(int transport) {
+            nc.addTransportType(transport);
+            return this;
+        }
+
+        NetworkCapabilitiesBuilder setLinkUpstreamBandwidthKbps(int upKbps) {
+            nc.setLinkUpstreamBandwidthKbps(upKbps);
+            return this;
+        }
+
+        NetworkCapabilitiesBuilder setLinkDownstreamBandwidthKbps(int downKbps) {
+            nc.setLinkDownstreamBandwidthKbps(downKbps);
+            return this;
+        }
+
+        NetworkCapabilities build() {
+            return new NetworkCapabilities(nc);
+        }
     }
 }
